@@ -1,0 +1,239 @@
+
+
+
+CREATE TABLE schema_153.transactions_data AS
+SELECT
+    t.trans_id,
+    t.trans_time,
+    t.trans_sum,
+    t.trans_success,
+    t.cid,
+    t.tid,
+    t.day_of_week,
+    t.country,
+    t.return,
+    t.category,
+    t.trans_dt,
+	REGEXP_REPLACE(SUBSTRING(t.trans_time FROM 1 FOR 2), '[^0-9]', '') AS trans_hour,
+	dc.category_name,
+	dg.gender_name,
+	da.age_group_name, 
+	ter.tid::text AS terminal_tid,
+    ter.latitude AS terminal_latitude,
+    ter.longitude AS terminal_longitude,
+    ter.okrug_mt_num AS terminal_okrug_mt_num,
+    ter.region_id AS terminal_region_id,
+    ter.internet_flag AS terminal_internet_flag,
+    ter.category AS terminal_category,
+	Case 
+    		WHEN ca.description = 'Working Day' THEN 0 
+    		ELSE 1 
+	END as holiday_flag
+FROM transactions t
+JOIN clients cl ON t.cid = cl.cid
+LEFT JOIN dict_category dc ON t.category = dc.category_id
+LEFT JOIN dict_gender dg ON cl.gender = dg.gender_id
+LEFT JOIN dict_age_group da ON cl.age_group = da.age_group_id
+JOIN terminals ter ON t.tid = ter.tid::text
+LEFT JOIN calendar ca ON t.trans_dt = ca.date
+WHERE t.trans_dt::date IN (
+    SELECT 
+        date_trunc('month', trans_dt::date) AS d
+    FROM transactions
+    UNION ALL
+    SELECT 
+        (date_trunc('month', trans_dt::date) + interval '1 month - 1 day') AS d
+    FROM transactions
+)
+
+
+
+
+
+CREATE TABLE schema_153.terminal_country as
+WITH transaction_data AS (
+    SELECT 
+        t.tid,
+        tr.country, 
+        COUNT(*) AS transaction_count
+    FROM 
+        TERMINALS t
+    JOIN 
+        TRANSACTIONS tr ON CAST(t.tid AS TEXT) = tr.tid
+    JOIN 
+        CLIENTS c ON tr.cid = c.cid
+    GROUP BY 
+        t.tid, tr.country
+),
+filtered_data AS (
+    SELECT 
+        tid,
+        country,
+        ROW_NUMBER() OVER(PARTITION BY tid ORDER BY transaction_count DESC) AS row_number
+    FROM 
+        transaction_data
+)
+SELECT 
+    tid AS terminal_id,
+    country
+FROM 
+    filtered_data
+WHERE 
+    row_number = 1
+
+
+
+
+
+CREATE TABLE schema_153.clients_info AS
+SELECT 
+    c.cid,
+    dg.gender_name,
+    ag.age_group_name,
+    c.okrug_num,
+    c.region_code
+FROM 
+    CLIENTS c
+LEFT JOIN 
+    DICT_GENDER dg ON c.gender = dg.Gender_id
+LEFT JOIN 
+    DICT_AGE_GROUP ag ON c.age_group = ag.age_group_id;
+
+
+
+
+CREATE TABLE schema_153.transactions_data_agg as
+SELECT
+    TO_CHAR(TO_DATE(trans_dt, 'YYYY-MM-DD'), 'YYYY-MM') AS month,  
+    tid,
+    SUM(trans_sum) AS trans_sum,
+    COUNT(trans_id) AS trans_cnt,
+    SUM(CASE WHEN gender_name = 'male' THEN trans_sum ELSE 0 END) AS trans_sum_m,
+    COUNT(CASE WHEN gender_name = 'male' THEN trans_id ELSE NULL END) AS trans_cnt_m,
+    SUM(CASE WHEN gender_name = 'female' THEN trans_sum ELSE 0 END) AS trans_sum_f,
+    COUNT(CASE WHEN gender_name = 'female' THEN trans_id ELSE NULL END) AS trans_cnt_f,
+    CASE
+        WHEN CAST(trans_hour AS INTEGER) BETWEEN 6 AND 12 THEN 'Morning'
+        WHEN CAST(trans_hour AS INTEGER) BETWEEN 13 AND 18 THEN 'Day'
+        WHEN CAST(trans_hour AS INTEGER) BETWEEN 19 AND 22 THEN 'Evening'
+        ELSE 'Ночь'
+    END AS day_part,
+    SUM(CASE WHEN "return" = 'Y' THEN trans_sum ELSE 0 END) AS return_sum,
+    COUNT(CASE WHEN "return" = 'Y' THEN trans_id ELSE NULL END) AS return_cnt,
+    day_of_week AS weekday,
+    holiday_flag,
+    terminal_latitude,
+    terminal_longitude
+FROM schema_153.transactions_data
+GROUP BY
+    month,
+    tid,
+    day_part,
+    day_of_week,
+    holiday_flag,
+    terminal_latitude,
+    terminal_longitude
+
+
+
+
+CREATE TABLE schema_153.purchases_median AS
+WITH filtered_transactions AS (
+    SELECT
+        t.cid,
+        t.trans_sum,
+        TO_TIMESTAMP(t.trans_dt, 'YYYY-MM-DD HH24:MI:SS') AS trans_dt, 
+        DATE_TRUNC('month', TO_TIMESTAMP(t.trans_dt, 'YYYY-MM-DD HH24:MI:SS')) AS month, 
+        c.age_group,
+        tm.internet_flag
+    FROM
+        TRANSACTIONS t
+    JOIN
+        TERMINALS tm ON t.tid = tm.tid::text
+    JOIN
+        CLIENTS c ON t.cid = c.cid
+    WHERE
+        tm.category = 11
+),
+online_transactions AS (
+    SELECT DISTINCT
+        cid,
+        month
+    FROM
+        filtered_transactions
+    WHERE
+        internet_flag = 1
+),
+offline_transactions AS (
+    SELECT DISTINCT
+        cid,
+        month
+    FROM
+        filtered_transactions
+    WHERE
+        internet_flag = 0
+),
+clients_both_modes AS (
+    SELECT
+        o.cid,
+        o.month
+    FROM
+        online_transactions o
+    JOIN
+        offline_transactions f ON o.cid = f.cid AND o.month = f.month
+),
+monthly_sums AS (
+    SELECT
+        f.month,
+        f.age_group,
+        f.cid,
+        SUM(f.trans_sum) AS total_sum
+    FROM
+        filtered_transactions f
+    JOIN
+        clients_both_modes cb ON f.cid = cb.cid AND f.month = cb.month
+    GROUP BY
+        f.month,
+        f.age_group,
+        f.cid
+),
+median_values AS (
+    SELECT
+        month,
+        age_group,
+        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY total_sum) AS median_sum
+    FROM
+        monthly_sums
+    GROUP BY
+        month,
+        age_group
+)
+SELECT
+    TO_CHAR(month, 'YYYY-MM') AS month, 
+    age_group,
+    median_sum
+FROM
+    median_values
+ORDER BY
+    month,
+    age_group
+
+
+
+
+
+CREATE TABLE schema_153.central_coordinates AS
+SELECT
+    tid,
+    terminal_latitude,
+    terminal_longitude,
+    AVG(terminal_latitude) AS central_latitude,
+    AVG(terminal_longitude) AS central_longitude
+FROM
+    schema_153.transactions_data_agg
+GROUP BY
+    tid,
+    terminal_latitude,
+    terminal_longitude
+
+

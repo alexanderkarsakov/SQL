@@ -28,12 +28,5 @@ This project focuses on analyzing transactional data from a PostgreSQL database,
 This project offers a structured approach to transforming raw transactional data into actionable insights. It highlights important trends, such as gender-specific transaction behavior and regional terminal usage, which can be used to optimize business strategies, improve user experience, and increase operational efficiency.
 
 ## Technologies Used
-- Python
 - PostgreSQL
-- Scikit-learn
-- Pandas
-- Matplotlib
-- Seaborn
 
-## Dataset
-The dataset used in this project includes transactional data, client demographic information, terminal details, and category-related metadata. The data is stored across multiple tables in a PostgreSQL database, enabling complex queries and analyses.
